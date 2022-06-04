@@ -171,6 +171,9 @@ def main(argv):
                       default=False, dest='embed_time_trace',
                       help='embed clang -ftime-trace json file found adjacent '
                       'to a target file')
+    parser.add_option('-p', '--print-max', type='int', default=0,
+                       dest='print_max',
+                       help='Print the N steps that took the longest time' )
     (options, args) = parser.parse_args()
 
     if len(args) == 0:
@@ -182,7 +185,13 @@ def main(argv):
     for pid, log_file in enumerate(args):
         with open(log_file, 'r') as log:
             entries += list(log_to_dicts(log, pid, vars(options)))
-    json.dump(entries, sys.stdout)
+
+    if options.print_max > 0:
+        sortedEntries = sorted(entries, reverse=True, key= lambda x: x["dur"])
+        for i in range(options.print_max):
+            print("{0} : {1}".format(sortedEntries[i]["dur"], sortedEntries[i]["name"]))
+    else:
+        json.dump(entries, sys.stdout)
 
 
 if __name__ == '__main__':
