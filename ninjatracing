@@ -39,6 +39,9 @@ class Target:
         self.end = int(end)
         self.targets = []
 
+    def is_object(self):
+        return self.targets and self.targets[0].endswith('.o')
+
 
 def read_targets(log, show_all):
     """Reads all targets from .ninja_log file |log_file|, sorted by start
@@ -134,12 +137,14 @@ def embed_time_trace(ninja_log_dir, target, pid, tid, options):
 def log_to_dicts(log, pid, options):
     """Reads a file-like object |log| containing a .ninja_log, and yields one
     about:tracing dict per command found in the log."""
+    if options['split']:
+        pid *= 3
     threads = Threads()
     for target in read_targets(log, options['showall']):
         tid = threads.alloc(target)
-
+        cat = 'objects' if target.is_object() else 'targets'
         yield {
-            'name': '%0s' % ', '.join(target.targets), 'cat': 'targets',
+            'name': '%0s' % ', '.join(target.targets), 'cat': cat,
             'ph': 'X', 'ts': (target.start * 1000),
             'dur': ((target.end - target.start) * 1000),
             'pid': pid, 'tid': tid, 'args': {},
@@ -154,21 +159,44 @@ def log_to_dicts(log, pid, options):
                                                tid, options):
                 yield time_trace
 
-def write_json(entries):
-    output = {
-        "traceEvents": [
-            {
-                "name": "process_name",
-                "ph": "M",
-                "pid": 0,
-                "args": {
-                    "name" : "Building"
-                }
-            },
-        ]
+
+def split_entries(entries):
+    """Splits entries by duplicating them into compiling or linking 'pid's"""
+    output = []
+    for entry in entries:
+        other = entry.copy()
+        if entry['cat'] == 'objects':
+            other['pid'] += 1
+        else:
+            other['pid'] += 2
+        output.extend((entry, other))
+    return output
+
+
+def pid_metadata(pid, title):
+    return {
+        "name": "process_name",
+        "ph": "M",
+        "pid": pid,
+        "args": {
+            "name" : title
+        }
     }
-    output['traceEvents'].extend(entries)
-    json.dump(output, sys.stdout)
+
+
+def write_json(entries, num_files, is_split):
+    events = []
+    for pid in range(num_files):
+        if is_split:
+            pid *= 3
+        events.append(pid_metadata(pid, 'Building'))
+        if is_split:
+            events.append(pid_metadata(pid + 1, 'Compiling'))
+            events.append(pid_metadata(pid + 2, 'Linking'))
+    if is_split:
+        entries = split_entries(entries)
+    events.extend(entries)
+    json.dump({ "traceEvents": events }, sys.stdout)
 
 
 
@@ -191,6 +219,8 @@ def main(argv):
     parser.add_option('-p', '--print-max', type='int', default=0,
                        dest='print_max',
                        help='Print the N steps that took the longest time' )
+    parser.add_option('-s', '--split', action='store_true', dest='split', default=False,
+                      help='split results into compilation vs. linking as well')
     (options, args) = parser.parse_args()
 
     if len(args) == 0:
@@ -203,12 +233,13 @@ def main(argv):
         with open(log_file, 'r') as log:
             entries += list(log_to_dicts(log, pid, vars(options)))
 
+
     if options.print_max > 0:
         sortedEntries = sorted(entries, reverse=True, key= lambda x: x["dur"])
         for i in range(options.print_max):
             print("{0} : {1}".format(sortedEntries[i]["dur"], sortedEntries[i]["name"]))
     else:
-        write_json(entries)
+        write_json(entries, len(args), options.split)
 
 
 if __name__ == '__main__':
